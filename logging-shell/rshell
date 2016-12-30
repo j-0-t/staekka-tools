@@ -1,0 +1,143 @@
+#!/usr/bin/ruby
+#
+#
+
+
+require 'pty'
+require 'expect'
+require 'termios'
+
+
+#@command = '/bin/tcsh'
+@command = ENV["SHELL"]
+@logfile = '/var/tmp/.x_rubyshell.log'
+@promt = "[$%#>] \z"
+@buffer_out = ""
+@buffer_in = ""
+
+def stdin_buffer( enable )
+	return unless defined?( Termios )
+	attr = Termios::getattr( $stdin )
+	if enable
+		attr.c_lflag |= Termios::ICANON | Termios::ECHO
+	else
+	attr.c_lflag &= ~(Termios::ICANON|Termios::ECHO)
+	end
+	Termios::setattr( $stdin, Termios::TCSANOW, attr )
+end
+
+def start_shell
+	(@pty_read, @pty_write, @pid) = PTY.spawn(@command)
+	trap("INT") {	send_ctrl_c() }
+end
+
+def start_log
+	logfile = @logfile + "-#{@pid}"
+	outlog =  @logfile + "-#{@pid}-output"
+	@log = File.open(logfile, "a")
+	@outlog = File.open(outlog, "a")
+end
+
+def send_ctrl_c
+	$stdin.puts "[CRTL]-C: send_ctrl_c()"
+	data = 3.chr
+	@pty.write(data)
+end
+
+
+def do_loop
+
+	begin
+	# @pty_write.puts "echo Start"
+	stdin_buffer false
+	loop do
+		break if @pty_write.closed?
+		if IO.select([$stdin],nil,nil,0.0001)
+		#data = $stdin.sysread(1)
+		data = $stdin.sysread(4)
+		@pty_write.print data
+		next unless data
+		@buffer_in << data
+		#@log.print data
+		#@log.print "[#{data}]"
+		#@log.print "<#{data[0]}>"
+		if data[0] == 3
+			@log.print "[CRTL-C]"
+		elsif data[0] == 4
+			@log.print "[CRTL-D]"
+		elsif data[0] == 8
+			@log.print "[Backspace]"
+		elsif data[0] == 9
+			@log.print "[Horizontal tab]"
+		elsif data[0] == 27
+			if (data[1] == 91) && (data[2] == 65)
+				@log.print "[UP]"
+			elsif (data[1] == 91) && (data[2] == 66)
+				@log.print "[DOWN]"
+			else
+			@log.print "[Escape]"
+		end
+		elsif data[0] == 127
+			@log.print "[DEL]"
+		else
+			@log.print "[#{data}]"
+		end
+
+
+
+	end
+
+	# @log.puts "\nbuffer[#{@buffer_out}]"
+
+	if @buffer_out =~ /[$%#>] \z/x
+		@log.puts "\n==================="
+		@buffer_out = ""
+	end
+
+	if IO.select([@pty_read],nil,nil,0.001)
+		#data = @pty_read.sysread(1)
+		data = @pty_read.sysread(8192)
+		$stdout.print data
+		$stdout.flush
+		@outlog.print data
+		@buffer_out << data
+		end
+	end
+	ensure
+		stdin_buffer true
+		@log.puts "\n======================================"
+		@log.puts "Input:\n#{@buffer_in}\n"
+		@log.close
+	end
+end
+
+def main
+	begin
+		start_shell()
+		start_log()
+		do_loop()
+	rescue
+	# puts "QUIT"
+	end
+end
+
+trap("SIGINT") do
+	send_ctrl_c()
+end
+
+trap("INT") do
+	send_ctrl_c()
+end
+
+
+trap("SIGTERM") do
+	send_ctrl_c()
+end
+
+
+
+main()
+
+
+
+
